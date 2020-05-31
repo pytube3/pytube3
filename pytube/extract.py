@@ -273,17 +273,17 @@ def apply_descrambler(stream_data: Dict, key: str) -> None:
     {'foo': [{'bar': '1', 'var': 'test'}, {'em': '5', 't': 'url encoded'}]}
 
     """
-    otf_type = "FORMAT_STREAM_TYPE_OTF"
-
     if key == "url_encoded_fmt_stream_map" and not stream_data.get(
-        "url_encoded_fmt_stream_map"
-    ):
+            "url_encoded_fmt_stream_map"
+        ):
         formats = json.loads(stream_data["player_response"])["streamingData"]["formats"]
         formats.extend(
             json.loads(stream_data["player_response"])["streamingData"][
                 "adaptiveFormats"
             ]
         )
+        otf_type = "FORMAT_STREAM_TYPE_OTF"
+
         try:
             stream_data[key] = [
                 {
