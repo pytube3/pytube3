@@ -4,46 +4,22 @@ import json
 import logging
 import re
 from collections import OrderedDict
-from html.parser import HTMLParser
-from typing import Any, Optional, Tuple, List, Dict
-from urllib.parse import quote, parse_qs, unquote, parse_qsl
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Tuple
+from urllib.parse import parse_qs
+from urllib.parse import parse_qsl
+from urllib.parse import quote
+from urllib.parse import unquote
 from urllib.parse import urlencode
 
 from pytube.cipher import Cipher
-from pytube.exceptions import RegexMatchError, HTMLParseError, LiveStreamError
+from pytube.exceptions import LiveStreamError
+from pytube.exceptions import RegexMatchError
 from pytube.helpers import regex_search
 
 logger = logging.getLogger(__name__)
-
-
-class PytubeHTMLParser(HTMLParser):
-    in_vid_descr = False
-    in_vid_descr_br = False
-    vid_descr = ""
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "p":
-            for attr in attrs:
-                if attr[0] == "id" and attr[1] == "eow-description":
-                    self.in_vid_descr = True
-
-    def handle_endtag(self, tag):
-        if self.in_vid_descr and tag == "p":
-            self.in_vid_descr = False
-
-    def handle_startendtag(self, tag, attrs):
-        if self.in_vid_descr and tag == "br":
-            self.in_vid_descr_br = True
-
-    def handle_data(self, data):
-        if self.in_vid_descr_br:
-            self.vid_descr += f"\n{data}"
-            self.in_vid_descr_br = False
-        elif self.in_vid_descr:
-            self.vid_descr += data
-
-    def error(self, message):
-        raise HTMLParseError(message)
 
 
 def is_age_restricted(watch_html: str) -> bool:
@@ -95,7 +71,6 @@ def video_info_url(video_id: str, watch_url: str) -> str:
     params = OrderedDict(
         [
             ("video_id", video_id),
-            ("el", "$el"),
             ("ps", "default"),
             ("eurl", quote(watch_url)),
             ("hl", "en_US"),
@@ -123,7 +98,9 @@ def video_info_url_age_restricted(video_id: str, embed_html: str) -> str:
     # Here we use ``OrderedDict`` so that the output is consistent between
     # Python 2.7+.
     eurl = f"https://youtube.googleapis.com/v/{video_id}"
-    params = OrderedDict([("video_id", video_id), ("eurl", eurl), ("sts", sts),])
+    params = OrderedDict(
+        [("video_id", video_id), ("eurl", eurl), ("sts", sts),]
+    )
     return _video_info_url(params)
 
 
@@ -140,7 +117,8 @@ def js_url(html: str) -> str:
     :param str html:
         The html contents of the watch page.
     """
-    base_js = get_ytplayer_config(html)["assets"]["js"]
+   # base_js = get_ytplayer_js(html)
+    base_js=re.search("\/s\/player.*\/base\.js",html).group()
     return "https://youtube.com" + base_js
 
 
@@ -171,6 +149,32 @@ def mime_type_codec(mime_type_codec: str) -> Tuple[str, List[str]]:
     return mime_type, [c.strip() for c in codecs.split(",")]
 
 
+def get_ytplayer_js(html: str) -> Any:
+    """Get the YouTube player base JavaScript path.
+
+    :param str html
+        The html contents of the watch page.
+    :rtype: str
+    :returns:
+        Path to YouTube's base.js file.
+    """
+    js_url_patterns = [
+        r"\"jsUrl\":\"([^\"]*)\"",
+        r"\"js\":\"([^\"]*base\.js)\""
+    ]
+    for pattern in js_url_patterns:
+        regex = re.compile(pattern)
+        function_match = regex.search(html)
+        if function_match:
+            logger.debug("finished regex search, matched: %s", pattern)
+            yt_player_js = function_match.group(1)
+            return yt_player_js
+
+    raise RegexMatchError(
+        caller="get_ytplayer_js", pattern="js_url_patterns"
+    )
+
+
 def get_ytplayer_config(html: str) -> Any:
     """Get the YouTube player configuration data from the watch html.
 
@@ -199,14 +203,9 @@ def get_ytplayer_config(html: str) -> Any:
             yt_player_config = function_match.group(1)
             return json.loads(yt_player_config)
 
-    raise RegexMatchError(caller="get_ytplayer_config", pattern="config_patterns")
-
-
-def _get_vid_descr(html: Optional[str]) -> str:
-    html_parser = PytubeHTMLParser()
-    if html:
-        html_parser.feed(html)
-    return html_parser.vid_descr
+    raise RegexMatchError(
+        caller="get_ytplayer_config", pattern="config_patterns"
+    )
 
 
 def apply_signature(config_args: Dict, fmt: str, js: str) -> None:
@@ -248,7 +247,9 @@ def apply_signature(config_args: Dict, fmt: str, js: str) -> None:
 
         signature = cipher.get_signature(ciphered_signature=stream["s"])
 
-        logger.debug("finished descrambling signature for itag=%s", stream["itag"])
+        logger.debug(
+            "finished descrambling signature for itag=%s", stream["itag"]
+        )
         # 403 forbidden fix
         stream_manifest[i]["url"] = url + "&sig=" + signature
 
@@ -278,12 +279,12 @@ def apply_descrambler(stream_data: Dict, key: str) -> None:
     if key == "url_encoded_fmt_stream_map" and not stream_data.get(
         "url_encoded_fmt_stream_map"
     ):
-        formats = json.loads(stream_data["player_response"])["streamingData"]["formats"]
-        formats.extend(
-            json.loads(stream_data["player_response"])["streamingData"][
-                "adaptiveFormats"
-            ]
-        )
+        streaming_data = json.loads(stream_data["player_response"])["streamingData"]
+        formats = []
+        if 'formats' in streaming_data.keys():
+            formats.extend(streaming_data['formats'])
+        if 'adaptiveFormats' in streaming_data.keys():
+            formats.extend(streaming_data['adaptiveFormats'])
         try:
             stream_data[key] = [
                 {
@@ -298,7 +299,12 @@ def apply_descrambler(stream_data: Dict, key: str) -> None:
             ]
         except KeyError:
             cipher_url = [
-                parse_qs(formats[i]["cipher"]) for i, data in enumerate(formats)
+                parse_qs(
+                    data[
+                        "cipher" if "cipher" in data.keys() else "signatureCipher"
+                    ]
+                )
+                for data in formats
             ]
             stream_data[key] = [
                 {
